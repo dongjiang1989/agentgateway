@@ -844,6 +844,7 @@ impl Gateway {
 			tls.and_then(|t| t.src_identity.clone()),
 			unverified_workload,
 		);
+		let dst = crate::cel::DestinationContext::from_tcp_connection(tcp);
 		// Surface CONNECT tunnel headers (captured in `terminate_connect_tunnel`) on
 		// the source context so request policies can reference `source.connectHeaders`.
 		// Move the map out of the stream extension (it has no other consumer) to avoid
@@ -857,6 +858,7 @@ impl Gateway {
 			anyhow::bail!("network authorization denied: {e}");
 		}
 		stream.ext_mut().insert(src);
+		stream.ext_mut().insert(dst);
 
 		let transport_metrics = inputs.metrics.clone();
 		let _max_dur_metrics = transport_metrics.clone();
@@ -900,7 +902,7 @@ impl Gateway {
 					dtrace::DebugTracer::maybe_scope(req, |req| async move {
 						proxy.proxy(connection, req).map(Ok::<_, Infallible>).await
 					})
-					.assert_size::<{ 15 * 1024 }>(),
+					.assert_size::<{ 16 * 1024 }>(),
 				)
 			}),
 		);

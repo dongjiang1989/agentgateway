@@ -15,7 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -707,7 +707,14 @@ func summarizeEvent(event traceEvent) string {
 		}
 		return truncate(strings.Join(parts, " "), 120)
 	case "requestFinished":
-		return "request finished"
+		parts := []string{"request finished"}
+		if event.Status != nil {
+			parts = append(parts, fmt.Sprintf("status=%d", *event.Status))
+		}
+		if event.Error != nil && *event.Error != "" {
+			parts = append(parts, "error="+*event.Error)
+		}
+		return truncate(strings.Join(parts, " "), 120)
 	case "bodySnapshot":
 		return fmt.Sprintf("%s body snapshot", event.Stage)
 	case "llmRouteResolved":
@@ -830,7 +837,7 @@ func summarizePolicySelection(phase string, raw json.RawMessage) string {
 		for key := range payload {
 			keys = append(keys, key)
 		}
-		sort.Strings(keys)
+		slices.Sort(keys)
 		if len(keys) == 0 {
 			return prefix + ": none"
 		}
