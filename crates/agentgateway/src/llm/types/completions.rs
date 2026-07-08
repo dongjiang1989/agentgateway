@@ -3,10 +3,9 @@ use agent_core::strng::Strng;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
-use crate::llm::bedrock::Provider;
 use crate::llm::policy::webhook::{Message, ResponseChoice};
 use crate::llm::types::{ResponseType, SimpleChatCompletionMessage};
-use crate::llm::{AIError, InputFormat, LLMRequest, LLMRequestParams, LLMResponse, conversion};
+use crate::llm::{AIError, InputFormat, LLMRequest, LLMRequestParams, LLMResponse};
 use crate::{json, llm};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -144,6 +143,10 @@ pub struct Usage {
 	/// Breakdown of tokens used in the prompt.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub prompt_tokens_details: Option<UsagePromptDetails>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub cache_read_input_tokens: Option<u64>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub cache_creation_input_tokens: Option<u64>,
 	#[serde(flatten, default)]
 	pub rest: serde_json::Value,
 }
@@ -178,11 +181,16 @@ impl ResponseType for Response {
 					.and_then(|d| d.reasoning_tokens)
 			}),
 			cached_input_tokens: self.usage.as_ref().and_then(|u| {
-				u.prompt_tokens_details
-					.as_ref()
-					.and_then(|d| d.cached_tokens)
+				u.cache_read_input_tokens.or_else(|| {
+					u.prompt_tokens_details
+						.as_ref()
+						.and_then(|d| d.cached_tokens)
+				})
 			}),
-			cache_creation_input_tokens: None,
+			cache_creation_input_tokens: self
+				.usage
+				.as_ref()
+				.and_then(|u| u.cache_creation_input_tokens),
 			service_tier: self.service_tier.as_deref().map(Into::into),
 			provider_model: Some(strng::new(&self.model)),
 			completion: if include_completion_in_log {
@@ -245,32 +253,6 @@ impl super::RequestType for Request {
 			.extend(prompts.into_iter().map(convert_message));
 	}
 
-	fn to_anthropic(&self) -> Result<Vec<u8>, AIError> {
-		conversion::messages::from_completions::translate(self)
-	}
-
-	fn to_bedrock(
-		&self,
-		provider: &Provider,
-		headers: Option<&::http::HeaderMap>,
-		prompt_caching: Option<&crate::llm::policy::PromptCachingConfig>,
-	) -> Result<crate::llm::conversion::bedrock::BedrockRequest, AIError> {
-		conversion::bedrock::from_completions::translate(self, provider, headers, prompt_caching)
-	}
-
-	fn to_openai(&self) -> Result<Vec<u8>, AIError> {
-		serde_json::to_vec(&self).map_err(AIError::RequestMarshal)
-	}
-
-	fn to_vertex(&self, provider: &crate::llm::vertex::Provider) -> Result<Vec<u8>, AIError> {
-		if provider.is_anthropic_model(self.model.as_deref()) {
-			let body = self.to_anthropic()?;
-			provider.prepare_anthropic_message_body(body)
-		} else {
-			self.to_openai()
-		}
-	}
-
 	fn to_llm_request(&self, provider: Strng, tokenize: bool) -> Result<LLMRequest, AIError> {
 		let model = strng::new(self.model.as_deref().unwrap_or_default());
 		let input_tokens = if tokenize {
@@ -284,7 +266,6 @@ impl super::RequestType for Request {
 		let llm = LLMRequest {
 			input_tokens,
 			input_format: InputFormat::Completions,
-			native_format: Some(crate::llm::custom::ProviderFormat::Completions),
 			cache_convention: crate::llm::CacheTokenConvention::pending(),
 			request_model: model,
 			provider,
@@ -502,6 +483,7 @@ pub mod typed {
 		/// A list of chat completion choices. Can be more than one if `n` is greater than 1.
 		pub choices: Vec<ChatChoice>,
 		/// The Unix timestamp (in seconds) of when the chat completion was created.
+		#[serde(default)]
 		pub created: u32,
 		/// The model used for the chat completion.
 		pub model: String,
@@ -515,6 +497,7 @@ pub mod typed {
 		pub system_fingerprint: Option<String>,
 
 		/// The object type, which is always `chat.completion`.
+		#[serde(default, skip_serializing_if = "String::is_empty")]
 		pub object: String,
 		pub usage: Option<Usage>,
 	}
@@ -572,6 +555,7 @@ pub mod typed {
 		pub choices: Vec<ChatChoiceStream>,
 
 		/// The Unix timestamp (in seconds) of when the chat completion was created. Each chunk has the same timestamp.
+		#[serde(default)]
 		pub created: u32,
 		/// The model to generate the completion.
 		pub model: String,
@@ -581,6 +565,7 @@ pub mod typed {
 		/// Can be used in conjunction with the `seed` request parameter to understand when backend changes have been made that might impact determinism.
 		pub system_fingerprint: Option<String>,
 		/// The object type, which is always `chat.completion.chunk`.
+		#[serde(default)]
 		pub object: String,
 
 		/// An optional field that will only be present when you set `stream_options: {"include_usage": true}` in your request.
@@ -591,6 +576,7 @@ pub mod typed {
 	#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 	pub struct ChatChoiceStream {
 		/// The index of the choice in the list of choices.
+		#[serde(default)]
 		pub index: u32,
 		pub delta: StreamResponseDelta,
 		/// The reason the model stopped generating tokens. This will be
@@ -652,6 +638,7 @@ pub mod typed {
 	#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 	pub struct ChatChoice {
 		/// The index of the choice in the list of choices.
+		#[serde(default)]
 		pub index: u32,
 		pub message: ResponseMessage,
 		/// The reason the model stopped generating tokens. This will be `stop` if the model hit a natural stop point or a provided stop sequence,

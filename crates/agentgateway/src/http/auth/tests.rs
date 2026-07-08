@@ -27,6 +27,62 @@ fn test_aws_auth_deserializes_assume_role() {
 }
 
 #[test]
+fn test_aws_auth_deserializes_assume_role_with_session_name_and_tags() {
+	let implicit: AwsAuth = serde_json::from_value(serde_json::json!({
+		"assumeRole": {
+			"roleArn": "arn:aws:iam::123456789012:role/my-role",
+			"sessionName": "acme-payments-invoice-processor",
+			"tags": [
+				{"key": "Team", "value": "acme-payments"},
+				{"key": "App", "value": "invoice-processor"}
+			]
+		}
+	}))
+	.expect("should deserialize assume role with session name and tags");
+	match implicit {
+		AwsAuth::Implicit {
+			assume_role: Some(ar),
+			..
+		} => {
+			assert_eq!(ar.role_arn, "arn:aws:iam::123456789012:role/my-role");
+			assert_eq!(
+				ar.session_name.as_deref(),
+				Some("acme-payments-invoice-processor")
+			);
+			// Tags are stored sorted by key, regardless of configured order.
+			assert_eq!(
+				ar.tags.as_ref(),
+				&[
+					("App".to_string(), "invoice-processor".to_string()),
+					("Team".to_string(), "acme-payments".to_string()),
+				]
+			);
+		},
+		_ => panic!("expected implicit AWS auth with assume role"),
+	}
+}
+
+#[test]
+fn test_aws_auth_assume_role_defaults_session_name_and_tags() {
+	let implicit: AwsAuth = serde_json::from_value(serde_json::json!({
+		"assumeRole": {
+			"roleArn": "arn:aws:iam::123456789012:role/backend"
+		}
+	}))
+	.expect("assume role without session name or tags should deserialize");
+	match implicit {
+		AwsAuth::Implicit {
+			assume_role: Some(ar),
+			..
+		} => {
+			assert_eq!(ar.session_name, None);
+			assert!(ar.tags.is_empty());
+		},
+		_ => panic!("expected implicit AWS auth with assume role"),
+	}
+}
+
+#[test]
 fn test_authorization_location_expression_extracts_from_cel() {
 	let req = ::http::Request::builder()
 		.uri("http://example.com/")
@@ -435,6 +491,34 @@ fn extract_subject_token_uses_authorization_header_without_claims() {
 
 	let token = oauth::extract_subject_token(&AuthorizationLocation::default(), &req);
 	assert_eq!(token.as_deref(), Some("header-tok"));
+}
+
+#[test]
+fn extract_subject_token_empty_authorization_header_falls_back_to_claims() {
+	let mut req = ::http::Request::builder()
+		.uri("http://example/")
+		.header(::http::header::AUTHORIZATION, "Bearer ")
+		.body(crate::http::Body::empty())
+		.unwrap();
+	req.extensions_mut().insert(Claims {
+		inner: Map::new(),
+		jwt: SecretString::from("claims-jwt"),
+	});
+
+	let token = oauth::extract_subject_token(&AuthorizationLocation::default(), &req);
+	assert_eq!(token.as_deref(), Some("claims-jwt"));
+}
+
+#[test]
+fn extract_subject_token_empty_authorization_header_is_missing() {
+	let req = ::http::Request::builder()
+		.uri("http://example/")
+		.header(::http::header::AUTHORIZATION, "Bearer ")
+		.body(crate::http::Body::empty())
+		.unwrap();
+
+	let token = oauth::extract_subject_token(&AuthorizationLocation::default(), &req);
+	assert_eq!(token, None);
 }
 
 #[test]

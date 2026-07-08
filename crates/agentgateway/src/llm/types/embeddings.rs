@@ -10,7 +10,7 @@ use crate::llm::{AIError, InputFormat, LLMRequest, LLMRequestParams, SimpleChatC
 pub struct Response {
 	pub object: String,
 	pub model: String,
-	pub usage: Usage,
+	pub usage: Option<Usage>,
 	#[serde(flatten, default)]
 	pub rest: serde_json::Value,
 }
@@ -66,7 +66,6 @@ impl RequestType for Request {
 			// We never tokenize these, so always empty
 			input_tokens: None,
 			input_format: InputFormat::Embeddings,
-			native_format: Some(crate::llm::custom::ProviderFormat::Embeddings),
 			cache_convention: crate::llm::CacheTokenConvention::pending(),
 			request_model: model,
 			provider,
@@ -96,36 +95,16 @@ impl RequestType for Request {
 	fn set_messages(&mut self, _messages: Vec<SimpleChatCompletionMessage>) {
 		unimplemented!("set_messages is used for prompt guard; prompt guard is disable for embeddings.")
 	}
-
-	fn to_openai(&self) -> Result<Vec<u8>, AIError> {
-		serde_json::to_vec(&self).map_err(AIError::RequestMarshal)
-	}
-
-	fn to_bedrock(
-		&self,
-		provider: &crate::llm::bedrock::Provider,
-		_headers: Option<&::http::HeaderMap>,
-		_prompt_caching: Option<&crate::llm::policy::PromptCachingConfig>,
-	) -> Result<crate::llm::conversion::bedrock::BedrockRequest, AIError> {
-		Ok(crate::llm::conversion::bedrock::BedrockRequest {
-			body: crate::llm::conversion::bedrock::from_embeddings::translate(self, provider)?,
-			tool_name_map: Default::default(),
-		})
-	}
-
-	fn to_vertex(&self, _provider: &crate::llm::vertex::Provider) -> Result<Vec<u8>, AIError> {
-		crate::llm::conversion::vertex::from_embeddings::translate(self)
-	}
 }
 
 impl crate::llm::types::ResponseType for Response {
 	fn to_llm_response(&self, _include_completion_in_log: bool) -> crate::llm::LLMResponse {
 		crate::llm::LLMResponse {
-			input_tokens: Some(self.usage.prompt_tokens as u64),
+			input_tokens: self.usage.as_ref().map(|u| u.prompt_tokens as u64),
 			input_image_tokens: None,
 			input_text_tokens: None,
 			input_audio_tokens: None,
-			total_tokens: Some(self.usage.total_tokens as u64),
+			total_tokens: self.usage.as_ref().map(|u| u.total_tokens as u64),
 			output_tokens: None,
 			output_image_tokens: None,
 			output_text_tokens: None,
