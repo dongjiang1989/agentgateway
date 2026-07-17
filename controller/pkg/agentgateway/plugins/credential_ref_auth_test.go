@@ -3,6 +3,7 @@ package plugins
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"istio.io/istio/pkg/kube/krt"
@@ -61,8 +62,8 @@ func TestAwsAuthPropagatesAssumeRoleSessionNameAndTags(t *testing.T) {
 			RoleArn:     "arn:aws:iam::111122223333:role/bedrock-team-acme-payments",
 			SessionName: new("acme-payments-invoice-processor"),
 			Tags: []agentgateway.AwsSessionTag{
-				{Key: "Team", Value: "acme-payments"},
-				{Key: "App", Value: "invoice-processor"},
+				{Key: "Team", Value: new("acme-payments")},
+				{Key: "App", Value: new("invoice-processor")},
 			},
 		},
 	}, "default")
@@ -79,6 +80,57 @@ func TestAwsAuthPropagatesAssumeRoleSessionNameAndTags(t *testing.T) {
 	assert.Equal(t, tags[0].GetValue(), "acme-payments")
 	assert.Equal(t, tags[1].GetKey(), "App")
 	assert.Equal(t, tags[1].GetValue(), "invoice-processor")
+}
+
+func TestAwsAuthPropagatesDynamicSessionTags(t *testing.T) {
+	secrets := krt.NewStaticCollection[*corev1.Secret](nil, nil, krt.WithName("plugins/TestAwsAuthPropagatesDynamicSessionTags"))
+	ctx := simpleAuthPolicyCtx(
+		&AgwCollections{
+			Secrets: secrets,
+		}, kubeutils.NewSecretCredentialResolver(secrets))
+
+	expression := agentgateway.CELExpression(`request.headers["x-app"]`)
+	policy, err := buildAwsAuthPolicy(ctx, &agentgateway.AwsAuth{
+		AssumeRole: &agentgateway.AwsAssumeRole{
+			RoleArn: "arn:aws:iam::111122223333:role/bedrock-caller",
+			Tags: []agentgateway.AwsSessionTag{
+				{Key: "Team", Value: new("acme-payments")},
+				{Key: "App", Expression: &expression},
+			},
+		},
+	}, "default")
+	assert.NoError(t, err)
+
+	tags := policy.GetAws().GetAssumeRole().GetTags()
+	assert.Equal(t, len(tags), 2)
+	assert.Equal(t, tags[0].GetKey(), "Team")
+	assert.Equal(t, tags[0].GetValue(), "acme-payments")
+	assert.Equal(t, tags[0].GetExpression(), "")
+	assert.Equal(t, tags[1].GetKey(), "App")
+	assert.Equal(t, tags[1].GetValue(), "")
+	assert.Equal(t, tags[1].GetExpression(), `request.headers["x-app"]`)
+}
+
+func TestAwsAuthPropagatesDynamicSessionName(t *testing.T) {
+	secrets := krt.NewStaticCollection[*corev1.Secret](nil, nil, krt.WithName("plugins/TestAwsAuthPropagatesDynamicSessionName"))
+	ctx := simpleAuthPolicyCtx(
+		&AgwCollections{
+			Secrets: secrets,
+		}, kubeutils.NewSecretCredentialResolver(secrets))
+
+	expression := agentgateway.CELExpression(`jwt.sub`)
+	policy, err := buildAwsAuthPolicy(ctx, &agentgateway.AwsAuth{
+		AssumeRole: &agentgateway.AwsAssumeRole{
+			RoleArn:               "arn:aws:iam::111122223333:role/bedrock-caller",
+			SessionNameExpression: &expression,
+		},
+	}, "default")
+	assert.NoError(t, err)
+
+	assumeRole := policy.GetAws().GetAssumeRole()
+	assert.Equal(t, assumeRole != nil, true)
+	assert.Equal(t, assumeRole.GetSessionName(), "")
+	assert.Equal(t, assumeRole.GetSessionNameExpression(), "jwt.sub")
 }
 
 func TestAwsAuthAssumeRoleOmitsUnsetSessionNameAndTags(t *testing.T) {
@@ -152,17 +204,18 @@ func TestBasicAuthCanUseInjectedCredentialResolver(t *testing.T) {
 			Name:      "basic-auth",
 		},
 		Data: map[string]string{
-			".htaccess": "alice:hash",
+			"users": "alice:hash",
 		},
 	}
 	configMaps := krt.NewStaticCollection[*corev1.ConfigMap](nil, []*corev1.ConfigMap{configMap}, krt.WithName("plugins/TestBasicAuthCanUseInjectedCredentialResolver"), krt.WithStop(stop))
 	ctx := simpleAuthPolicyCtx(nil, configMapCredentialResolver{configMaps: configMaps})
 
 	policy, err := processBasicAuthenticationPolicy(ctx, &agentgateway.BasicAuthentication{
-		SecretRef: &agentgateway.LocalSecretObjectRef{
+		SecretRef: &agentgateway.LocalSecretKeyRef{
 			Name:  "basic-auth",
 			Group: "example.agentgateway.dev",
 			Kind:  "ConfigMapCredential",
+			Key:   new("users"),
 		},
 	}, nil, "base", types.NamespacedName{Namespace: "default", Name: "policy"})
 	if err != nil {
@@ -196,7 +249,7 @@ func TestBasicAuthFallsBackToSecretResolverWithInjectedCredentialResolver(t *tes
 	)
 
 	policy, err := processBasicAuthenticationPolicy(ctx, &agentgateway.BasicAuthentication{
-		SecretRef: &agentgateway.LocalSecretObjectRef{
+		SecretRef: &agentgateway.LocalSecretKeyRef{
 			Name: "basic-auth",
 			Kind: "Secret",
 		},
@@ -226,13 +279,53 @@ func TestBasicAuthCustomResolverDoesNotImplicitlyFallbackToSecret(t *testing.T) 
 	}, configMapCredentialResolver{})
 
 	_, err := processBasicAuthenticationPolicy(ctx, &agentgateway.BasicAuthentication{
-		SecretRef: &agentgateway.LocalSecretObjectRef{
+		SecretRef: &agentgateway.LocalSecretKeyRef{
 			Name: "basic-auth",
 			Kind: "Secret",
 		},
 	}, nil, "base", types.NamespacedName{Namespace: "default", Name: "policy"})
 	if !errors.Is(err, kubeutils.ErrUnsupportedCredentialKind) {
 		t.Fatalf("processBasicAuthenticationPolicy() error = %v, want ErrUnsupportedCredentialKind", err)
+	}
+}
+
+func TestBackendAuthCustomKeyRejectsEmptyValue(t *testing.T) {
+	stop := test.NewStop(t)
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default",
+			Name:      "backend-auth",
+		},
+		Data: map[string][]byte{
+			"token": []byte("  "),
+		},
+	}
+	secrets := krt.NewStaticCollection[*corev1.Secret](nil, []*corev1.Secret{secret}, krt.WithName("plugins/TestBackendAuthCustomKeyRejectsEmptyValue"), krt.WithStop(stop))
+	ctx := simpleAuthPolicyCtx(&AgwCollections{
+		Secrets: secrets,
+	}, kubeutils.NewSecretCredentialResolver(secrets))
+	policy := &agentgateway.AgentgatewayPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default",
+			Name:      "backend-auth",
+		},
+		Spec: agentgateway.AgentgatewayPolicySpec{
+			Backend: &agentgateway.BackendFull{
+				BackendSimple: agentgateway.BackendSimple{
+					Auth: &agentgateway.BackendAuth{
+						SecretRef: &agentgateway.LocalSecretKeyRef{
+							Name: "backend-auth",
+							Key:  new("token"),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := translateBackendAuth(ctx, policy, "default/backend-auth")
+	if err == nil || !strings.Contains(err.Error(), "missing token value") {
+		t.Fatalf("translateBackendAuth() error = %v, want missing token error", err)
 	}
 }
 
