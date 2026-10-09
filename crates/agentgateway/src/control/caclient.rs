@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
-
 use rustls::client::Resumption;
 use rustls::server::VerifierBuilderError;
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
@@ -718,11 +717,12 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4f6wg4PvmdHJzX...
 
 	/// Helper: generate a self-signed CA + leaf cert for testing TLS config caching.
 	fn test_workload_certificate() -> WorkloadCertificate {
+		use std::time::{Duration, SystemTime};
+
 		use rcgen::{
 			BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, Issuer, KeyPair,
 			KeyUsagePurpose, SanType,
 		};
-		use std::time::{Duration, SystemTime};
 
 		// Generate CA key + self-signed CA cert
 		let ca_kp = KeyPair::generate().unwrap();
