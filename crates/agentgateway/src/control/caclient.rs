@@ -177,7 +177,8 @@ impl WorkloadCertificate {
 
 		let cc = self.build_client_config(&identity, vec![b"istio".into()])?;
 		let arc_cc = Arc::new(cc);
-		self.legacy_mtls_cache
+		self
+			.legacy_mtls_cache
 			.write()
 			.insert(identity, arc_cc.clone());
 		Ok(VersionedBackendTLS {
@@ -200,7 +201,8 @@ impl WorkloadCertificate {
 		let mut cc = self.build_client_config(&identity, vec![b"h2".into()])?;
 		cc.enable_sni = false;
 		let arc_cc = Arc::new(cc);
-		self.hbone_mtls_cache
+		self
+			.hbone_mtls_cache
 			.write()
 			.insert(identity, arc_cc.clone());
 		Ok(VersionedBackendTLS {
@@ -253,7 +255,8 @@ impl WorkloadCertificate {
 
 		let sc = self.build_server_config(alpns, require_client_cert)?;
 		let arc_sc = Arc::new(sc);
-		self.server_config_cache
+		self
+			.server_config_cache
 			.write()
 			.insert(cache_key, arc_sc.clone());
 		Ok(arc_sc)
@@ -716,7 +719,7 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4f6wg4PvmdHJzX...
 	/// Helper: generate a self-signed CA + leaf cert for testing TLS config caching.
 	fn test_workload_certificate() -> WorkloadCertificate {
 		use rcgen::{
-			BasicConstraints, CertificateParams, DnType, DistinguishedName, IsCa, Issuer, KeyPair,
+			BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, Issuer, KeyPair,
 			KeyUsagePurpose, SanType,
 		};
 		use std::time::{Duration, SystemTime};
@@ -738,10 +741,15 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4f6wg4PvmdHJzX...
 		leaf_params.not_before = SystemTime::now().into();
 		leaf_params.not_after = (SystemTime::now() + Duration::from_secs(3600)).into();
 		leaf_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
-		leaf_params.extended_key_usages =
-			vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth, rcgen::ExtendedKeyUsagePurpose::ServerAuth];
-		leaf_params.subject_alt_names =
-			vec![SanType::URI("spiffe://cluster.local/ns/default/sa/test".try_into().unwrap())];
+		leaf_params.extended_key_usages = vec![
+			rcgen::ExtendedKeyUsagePurpose::ClientAuth,
+			rcgen::ExtendedKeyUsagePurpose::ServerAuth,
+		];
+		leaf_params.subject_alt_names = vec![SanType::URI(
+			"spiffe://cluster.local/ns/default/sa/test"
+				.try_into()
+				.unwrap(),
+		)];
 		let issuer = Issuer::from_params(&ca_params, &ca_kp);
 		let leaf_cert = leaf_params.signed_by(&leaf_kp, &issuer).unwrap();
 
@@ -762,7 +770,8 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4f6wg4PvmdHJzX...
 	#[test]
 	fn test_legacy_mtls_caching() {
 		let cert = test_workload_certificate();
-		let identity = vec![Identity::from_str("spiffe://cluster.local/ns/default/sa/backend").unwrap()];
+		let identity =
+			vec![Identity::from_str("spiffe://cluster.local/ns/default/sa/backend").unwrap()];
 
 		// First call builds the config
 		let result1 = cert.legacy_mtls(identity.clone()).unwrap();
@@ -775,7 +784,8 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4f6wg4PvmdHJzX...
 	#[test]
 	fn test_hbone_mtls_caching() {
 		let cert = test_workload_certificate();
-		let identity = vec![Identity::from_str("spiffe://cluster.local/ns/default/sa/backend").unwrap()];
+		let identity =
+			vec![Identity::from_str("spiffe://cluster.local/ns/default/sa/backend").unwrap()];
 
 		let result1 = cert.hbone_mtls(identity.clone()).unwrap();
 		let result2 = cert.hbone_mtls(identity.clone()).unwrap();
